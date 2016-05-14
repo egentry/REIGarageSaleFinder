@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import NoSuchElementException
 import unittest, time, re, datetime, os
+from multiprocessing import Pool
 import smtplib
 from email.mime.text import MIMEText
 
@@ -10,12 +11,17 @@ from email.mime.text import MIMEText
 # Authors: Mike Adler - May 3, 2013
 #          Eric Gentry - May 2016
 #
-# GOESInterviewChecker - Used to automate checking of GOES interview times.
+# GOESInterviewChecker - Used to automate checking and rescheduling GOES interview.
 #
 # This program will log in to your GOES account with the set values below,
 # and will read the earliest date at your preferred enrollment center. 
 # 
-# If an opening exists within a given range, it will send you an email.
+# If an opening exists within a given range,  and is not found in `excluded_dates`
+# it will reschedule your appointment to the earliest opening and send you an email.
+#
+# If it reschedules your interview, it will create the file "rescheduled_interview"
+#
+# If it finds the file "rescheduled_interview" it will not keep checking the website.
 #
 #####
 
@@ -31,25 +37,38 @@ class GOESInterviewChecker(unittest.TestCase):
 	# Email Info
 	# Set these values
 	from usernames_and_passwords import EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_TO
-	EMAIL_SUBJECT = "GOES - Earlier Interview Found!" #subject of the email notification
-	SMTP_SERVER = "smtp.gmail.com" #smtp server address to use for email sending
-	SMTP_PORT = 465 #smtp server port number
+	EMAIL_SUBJECT = "GOES - New Interview Scheduled!"
+	SMTP_SERVER = "smtp.gmail.com" 
+	SMTP_PORT = 465
 	
+	default_date_format = "%B %d, %Y"
 	# **Must be in the format: "June 1, 2013"
-	before_this_date_str = "December 1, 2016" 
+	before_this_date_str = "December 10, 2016" 
 	before_this_date = datetime.datetime.strptime(before_this_date_str,
-												  "%B %d, %Y")
+												 default_date_format)
 
 	# **Must be in the format: "June 1, 2013"
 	after_this_date_str = "January 1, 2000" 
 	after_this_date = datetime.datetime.strptime(after_this_date_str,
-												  "%B %d, %Y")
+												 default_date_format)
 
+	excluded_dates = [
+		"January 1, 2000",
+		"February 1, 2000",
+		"March 1, 2000",
+	]
+	for i in range(len(excluded_dates)):
+		# because list comprehensions won't work in class definitions
+		excluded_dates[i] = datetime.datetime.strptime(excluded_dates[i],
+													   default_date_format)
 	
 	#########
 	# Custom functions to process GOES Website Information
 	#########
 	def test_g_o_e_s_interview_checker(self):
+
+		if os.path.exists("rescheduled_interview"):
+			return
 
 		driver = self.driver
 		driver.get(self.GOES_BASE_URL + "/main/goes")
@@ -74,29 +93,44 @@ class GOESInterviewChecker(unittest.TestCase):
 				
 		driver.find_element_by_name("next").click()
 
-		elem = driver.find_elements_by_css_selector(".header[id^='scheduleForm:schedule1_header_']")[0]
-		available_date_str = elem.get_attribute("id").split("_")[-1]
+		available_datetime_str = driver.find_element_by_class_name("entry").get_attribute("onmouseup")
+		available_datetime_str = available_datetime_str.split("'")[-2]
+
+		available_date = datetime.datetime(int(available_datetime_str[0:4]),
+										   int(available_datetime_str[4:6]),
+										   int(available_datetime_str[6:-4]))
+		available_time = available_datetime_str[-4:]
+
+		if    (available_date > self.before_this_date) \
+		   or (available_date < self.after_this_date) \
+		   or (available_date in self.excluded_dates):
+			print("No better dates found.")
+			driver.find_element_by_link_text("Log off").click()
+			return
+
+		driver.find_element_by_class_name("entry").click()
+		try:
+			driver.find_element_by_id("comments").send_keys("Better date")
+		except NoSuchElementException:
+			driver.find_element_by_link_text("Log off").click()
+			return
+
+		driver.find_element_by_id("Confirm").click()
 
 		time.sleep(5)
-		# log-off of your GOES account
 		driver.find_element_by_link_text("Log off").click()
 
+		available_date_str = available_date.strftime(self.default_date_format)
+		new_appointment = "{}:{} {}".format(available_time[0:2], 
+											available_time[2:],
+											available_date_str)
 
-		available_date = datetime.datetime(int(available_date_str[0:4]),
-										   int(available_date_str[4:6]),
-										   int(available_date_str[6:]))
+		with open("rescheduled_interview", mode="w") as f:
+			f.write(new_appointment)
 
-		# build email message
-		emailMessage = available_date.strftime("%B %d, %Y")
-		
-		# if there's earlier dates, send the email
-		if     (available_date < self.before_this_date) \
-		   and (available_date > self.after_this_date):
-			print("Better Date Found!")
-			print("Sending Email Message: {}".format(emailMessage))
-			self.sendEmail(emailMessage)
-		else:
-			print("NO better dates found.")
+		print("Better Date Found!")
+		print("Sending Email Message: {}".format(new_appointment))
+		self.sendEmail(new_appointment)
 		
 		
 	def sendEmail(self, message):
