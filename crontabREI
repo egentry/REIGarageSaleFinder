@@ -1,1 +1,1 @@
-0 3 * * * python REIGarageSaleFinder.py
+0 3 * * * cd /path/to/REIGarageSaleFinder && python REIGarageSaleFinder.py 1>log 2>&1
