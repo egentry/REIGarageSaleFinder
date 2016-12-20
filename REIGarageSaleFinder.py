@@ -3,193 +3,138 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import NoSuchElementException
 import unittest, time, re, datetime, os
-from multiprocessing import Pool
 import smtplib
 from email.mime.text import MIMEText
 
+
 #####
-# Authors: Mike Adler - May 3, 2013
-#          Eric Gentry - May 2016
+# Authors: Mike Adler - May 3, 2013 (from github:mike200015/goes-interview-checker)
+#          Eric Gentry - May 2016 & Dec 2016
 #
-# GOESInterviewChecker - Used to automate checking and rescheduling GOES interview.
+# REIGarageSaleFinder - Used to automatically check for new REI Garage Sale events
 #
-# This program will log in to your GOES account with the set values below,
-# and will read the earliest date at your preferred enrollment center. 
-# 
-# If an opening exists within a given range,  and is not found in `excluded_dates`
-# it will reschedule your appointment to the earliest opening and send you an email.
-#
-# If it reschedules your interview, it will create the file "rescheduled_interview"
-#
-# If it finds the file "rescheduled_interview" it will not keep checking the website.
+# At my REI (Saratoga), they sometimes post Garage Sale listings on their
+# website, but not in their regular emails. This program will automatically
+# check their website for you.  If it finds a new Garage Sale, it'll email
+# you to let you know.  It'll also keep track of Garage Sales it's already
+# seen, so that it doesn't keep emailing you about the same event.
 #
 #####
 
-class GOESInterviewChecker(unittest.TestCase):
-	
-	# GOES Account Info
-	# Set these values
-	# Note: Preferred enrollment center value is the text value in the enrollment center dropdown menu
-	from usernames_and_passwords import GOES_USERNAME, GOES_PASSWORD
-	GOES_BASE_URL = "https://goes-app.cbp.dhs.gov/" 
-	GOES_PREFERRED_ENROLLMENT_CENTER = "San Francisco Global Entry Enrollment Center - San Francisco International Airport, San Francisco, CA 94128, US"
-	
-	# Email Info
-	# Set these values
-	from usernames_and_passwords import EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_TO
-	EMAIL_SUBJECT = "GOES - New Interview Scheduled!"
-	SMTP_SERVER = "smtp.gmail.com" 
-	SMTP_PORT = 465
-	
-	default_date_format = "%B %d, %Y"
-	# **Must be in the format: "June 1, 2013"
-	before_this_date_str = "December 10, 2016" 
-	before_this_date = datetime.datetime.strptime(before_this_date_str,
-												 default_date_format)
+class REIGarageSaleFinder(unittest.TestCase):
+    
+    BASE_URL = "https://www.rei.com/stores/saratoga.html" 
+    
+    # Email Info
+    # Set these values
+    from usernames_and_passwords import EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_TO
+    EMAIL_SUBJECT = "New REI Garage Sale Listing"
+    SMTP_SERVER = "smtp.gmail.com" 
+    SMTP_PORT = 465
+    
+    default_date_format = "%m/%d/%Y"
+    # Expects the format: "6/1/2013" for June 1 (can be, but need not be zero padded)
 
-	# **Must be in the format: "June 1, 2013"
-	after_this_date_str = "January 1, 2000" 
-	after_this_date = datetime.datetime.strptime(after_this_date_str,
-												 default_date_format)
 
-	excluded_dates = [
-		"January 1, 2000",
-		"February 1, 2000",
-		"March 1, 2000",
-	]
-	for i in range(len(excluded_dates)):
-		# because list comprehensions won't work in class definitions
-		excluded_dates[i] = datetime.datetime.strptime(excluded_dates[i],
-													   default_date_format)
-	
-	#########
-	# Custom functions to process GOES Website Information
-	#########
-	def test_g_o_e_s_interview_checker(self):
+    #########
+    # Custom function to process REI website
+    #########
+    def test_garage_sale_finder(self):
 
-		if os.path.exists("rescheduled_interview"):
-			return
+        known_dates_filename = "known_dates"
+        known_dates = set()
+        if os.path.exists(known_dates_filename):
+            with open(known_dates_filename, mode="r+") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    date = datetime.datetime.strptime(line, self.default_date_format)
+                    known_dates.add(date)
+                if raw_line[-1] not in {"\n", "\r"}:
+                    #ensure last line is empty, so we print directly to a clean line later
+                    print("", file=f)
 
-		driver = self.driver
-		driver.get(self.GOES_BASE_URL + "/main/goes")
-		time.sleep(2)
-		# driver.find_element_by_id("user").clear()
-		driver.find_element_by_id("user").send_keys(self.GOES_USERNAME)
-		# driver.find_element_by_id("password").clear()
-		driver.find_element_by_id("password").send_keys(self.GOES_PASSWORD)
-		driver.find_element_by_id("SignIn").click()
-		driver.find_element_by_link_text("Enter").click()
-		time.sleep(2)
-		driver.find_element_by_name("manageAptm").click()
-		driver.find_element_by_name("reschedule").click()
-				
-		dropdown = driver.find_element_by_id("selectedEnrollmentCenter")
-		
-		# select preferred enrollment center
-		for option in dropdown.find_elements_by_tag_name('option'):
-			if option.text == self.GOES_PREFERRED_ENROLLMENT_CENTER:
-				option.click() 
-				break
-				
-		driver.find_element_by_name("next").click()
+        print("known dates: ", known_dates)
 
-		available_datetime_str = driver.find_element_by_class_name("entry").get_attribute("onmouseup")
-		available_datetime_str = available_datetime_str.split("'")[-2]
+        driver = self.driver
+        driver.get(self.BASE_URL)
+        time.sleep(3)
 
-		available_date = datetime.datetime(int(available_datetime_str[0:4]),
-										   int(available_datetime_str[4:6]),
-										   int(available_datetime_str[6:-4]))
-		available_time = available_datetime_str[-4:]
+        pages_text = driver.find_element_by_class_name("event-search-pages").text
+        num_pages = int(pages_text.replace("Page","").replace("of", "").split()[-1])
 
-		if    (available_date > self.before_this_date) \
-		   or (available_date < self.after_this_date) \
-		   or (available_date in self.excluded_dates):
-			print("No better dates found.")
-			driver.find_element_by_link_text("Log off").click()
-			return
+        print("num_pages: ", num_pages)
 
-		driver.find_element_by_class_name("entry").click()
-		try:
-			driver.find_element_by_id("comments").send_keys("Better date")
-		except NoSuchElementException:
-			driver.find_element_by_link_text("Log off").click()
-			return
+        found_event_dates = []
+        for i in range(num_pages):
+            # get list of all events
+            events = driver.find_elements_by_class_name("event-search-list-item")
+            
+            for event in events:
 
-		driver.find_element_by_id("Confirm").click()
+                # check if it has the correct event title
+                event_name = event.find_element_by_xpath('.//a[@class="link-explore"]').text
+                if "Garage Sale" in event_name:
+                    date_text = event.find_element_by_xpath('.//p[@data-ui="event-details-date"]').text
+                    print("event: ", event_name, " on ", date_text)
+                    found_event_dates.append(datetime.datetime.strptime(date_text, self.default_date_format))
 
-		time.sleep(5)
-		driver.find_element_by_link_text("Log off").click()
+            if i+1 < num_pages:
+                button_wrapper = driver.find_element_by_class_name("event-search-pages-forward")
+                button_wrapper.find_element_by_xpath('.//a[@data-ui="event-search-pages-next"]').click()
+                print("Going to page {} of {}".format(i+2, num_pages ))
+                time.sleep(5)
 
-		available_date_str = available_date.strftime(self.default_date_format)
-		new_appointment = "{}:{} {}".format(available_time[0:2], 
-											available_time[2:],
-											available_date_str)
+        new_dates = [date for date in found_event_dates if date not in known_dates]
+        for new_date in new_dates:
+                print("new date:", new_date)
+                with open(known_dates_filename, mode="a") as f:
+                    f.write(new_date.strftime(self.default_date_format))
 
-		with open("rescheduled_interview", mode="w") as f:
-			f.write(new_appointment)
 
-		print("Better Date Found!")
-		print("Sending Email Message: {}".format(new_appointment))
-		self.sendEmail(new_appointment)
-		
-		
-	def sendEmail(self, message):
-		# Create a text/plain message
-		msg = MIMEText(message)
+        if len(new_dates) > 0:
+            print("Sending email of new date[s] to self")
+            self.sendEmail(new_dates)
+        
+        
+    def sendEmail(self, new_dates):
+        # Create a text/plain message
 
-		msg['Subject'] = self.EMAIL_SUBJECT
-		msg['From'] = self.EMAIL_SENDER
-		msg['To'] = self.EMAIL_TO
+        message = "Dates: \n"
+        for date in new_dates:
+            message += date.strftime(self.default_date_format) + "\n"
 
-		# Send the message via provided server
-		session = smtplib.SMTP_SSL(self.SMTP_SERVER, self.SMTP_PORT)
-		
-		# Login to the smtp server
-		# session.ehlo()
-		# session.starttls()
-		# session.ehlo()
-		session.login(self.EMAIL_SENDER, self.EMAIL_PASSWORD)
-		
-		session.sendmail(self.EMAIL_SENDER, [self.EMAIL_TO], msg.as_string())
-		session.quit()
-		
-	#######
-	# Selenium Functions - DO NOT MODIFY
-	######
-	def setUp(self):
-		self.driver = webdriver.Chrome()
-		self.driver.implicitly_wait(60)
-		self.verificationErrors = []
-		self.accept_next_alert = True
-		
-	def is_element_present(self, how, what):
-		try: self.driver.find_element(by=how, value=what)
-		except NoSuchElementException: return False
-		return True
+        message += "\n" + self.BASE_URL + "\n"
 
-	def is_alert_present(self):
-		try: self.driver.switch_to_alert()
-		except NoAlertPresentException: return False
-		return True
+        msg = MIMEText(message)
 
-	def close_alert_and_get_its_text(self):
-		try:
-			alert = self.driver.switch_to_alert()
-			alert_text = alert.text
-			if self.accept_next_alert:
-				alert.accept()
-			else:
-				alert.dismiss()
-			return alert_text
-		finally: self.accept_next_alert = True
+        msg['Subject'] = self.EMAIL_SUBJECT
+        msg['From'] = self.EMAIL_SENDER
+        msg['To'] = self.EMAIL_TO
 
-	def tearDown(self):
-		# self.driver.quit()
-		self.assertEqual([], self.verificationErrors)
+        # Send the message via provided server
+        session = smtplib.SMTP_SSL(self.SMTP_SERVER, self.SMTP_PORT)
+        
+        # Login to the smtp server
+        # session.ehlo()
+        # session.starttls()
+        # session.ehlo()
+        session.login(self.EMAIL_SENDER, self.EMAIL_PASSWORD)
+        
+        session.sendmail(self.EMAIL_SENDER, [self.EMAIL_TO], msg.as_string())
+        session.quit()
+        
+    #######
+    # Selenium Functions - DO NOT MODIFY
+    ######
+    def setUp(self):
+        self.driver = webdriver.Chrome()
+        self.driver.implicitly_wait(60)
+        self.verificationErrors = []
+        self.accept_next_alert = True
 
 ######
 # Main - initiates the program
 ######
 if __name__ == "__main__":
-	unittest.main()
-	
+    unittest.main()
+    
